@@ -1,35 +1,77 @@
-import 'package:recipes/Models/Recipe.dart';
-import 'package:recipes/Services/Recipe/Repository/RecipeRepository.dart';
-
 import 'package:dio/dio.dart';
+import 'package:recipes/Models/Recipe.dart';
+import 'package:recipes/Services/Recipe/Client/RecipeClient.dart';
+import 'package:recipes/Services/Recipe/Client/RecipeResponse.dart';
+import 'package:recipes/Models/Mappers/RecipeMapper.dart';
+import 'package:recipes/lib/Network/UseCase.dart';
 
-class RecipeUseCase {
+import 'package:flutter/foundation.dart' show immutable;
 
-  static Future<List<Recipe>> fetch({ingredients: String, query: String, page: int}) async {
+@immutable
+class RecipeQuery {
+  final String ingredients;
+  final String query;
+  final int page;
+  const RecipeQuery({this.ingredients = "", this.query = "", this.page = 1})
+      : assert(ingredients != null), assert(query != null), assert(page != null);
+  RecipeQuery copyWith({String ingredients, String query, int page}) =>
+    RecipeQuery(
+      ingredients: ingredients ?? this.ingredients,
+      query: query ?? this.query,
+      page: page ?? this.page
+    );
+}
+
+abstract class MixinRecipeUseCase {
+  Future<List<Recipe>> fetch(RecipeQuery recipeQuery);
+  Future<List<Recipe>> multiFetch({ingredients: String, query: String, List<int> pages});
+}
+
+class RecipeUseCase with UseCase implements MixinRecipeUseCase {
+
+  RecipeClient _recipeClient;
+
+  RecipeUseCase({RecipeClient recipeClient}) {
+    this.setupHttpClient(options: this.defaultOptions);
+    this._recipeClient = recipeClient ?? RecipeClient.instance(httpClient);
+  }
+
+  //
+
+  Future<List<Recipe>> fetch(RecipeQuery recipeQuery) async {
     try {
-      final response = await RecipeRepository.fetch(ingredients: ingredients, query: query, page: page);
-      return Recipe.fromResponse(response);
-    } on DioError catch(e) {
-      print(e.message);
+      final response = await this._recipeClient.fetch(
+        ingredients: recipeQuery.ingredients,
+        query: recipeQuery.query,
+        page: recipeQuery.page
+      );
+      return RecipeMapper.fromResponse(RecipeResponse.fromJson(response.data));
+    } on DioError catch(_) {
+      return [];
+    } on Exception catch(e) {
+      print(e.toString());
+      return [];
+    } catch(e) {
+      print(e.toString());
       return [];
     }
   }
 
-  static Future<List<Recipe>> multiFetch({ingredients: String, query: String, List<int> pages}) async {
-    try {
-      if (pages.isEmpty) { return []; }
-      List<Recipe> recipes = [];
-      for (final page in pages) {
-        recipes.addAll(await RecipeUseCase.fetch(ingredients: ingredients, query: query, page: page));
-      }
-      return recipes;
-    } on DioError catch(e) {
-      print(e.message);
+  Future<List<Recipe>> multiFetch({ingredients: String, query: String, List<int> pages}) async {
+
+    if (pages.isEmpty) {
+      assert(true, "Pages can't be empty!");
       return [];
     }
-  }
 
-  static void cancel() {
-    RecipeRepository.cancelRequest();
+    final goodPages = pages.where((page) => page > 0);
+    assert(goodPages.length == pages.length, "Some pages have bad number!");
+
+    final recipes = <Recipe>[];
+    for (final page in goodPages) {
+      recipes.addAll(await this.fetch(RecipeQuery(ingredients: ingredients, query: query, page: page)));
+    }
+
+    return recipes;
   }
 }

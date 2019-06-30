@@ -1,14 +1,24 @@
 import 'package:dio/dio.dart';
+
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+
 import 'package:recipes/Models/Recipe.dart';
 import 'package:recipes/Pages/RecipeSearch/Utils/RecipeResultsType.dart';
 import 'package:recipes/Pages/RecipeSearch/RecipeStateNotifier.dart';
 import 'package:recipes/Services/Recipe/RecipeUseCase.dart';
+
 import 'package:provider/provider.dart';
+import 'package:recipes/Utils/MediaQueryUtils.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 class RecipeResultList extends StatefulWidget {
+
+  final RecipeUseCase recipeUseCase;
+
+  RecipeResultList({@required this.recipeUseCase})
+      : assert(recipeUseCase != null);
+
   @override
   _RecipeResultListState createState() => _RecipeResultListState();
 }
@@ -18,16 +28,16 @@ class _RecipeResultListState extends State<RecipeResultList> {
   static const int _pageSize = 10;
   final _refreshIndicatorKey = GlobalKey<RefreshIndicatorState>();
 
-  bool _isLoading = false;
+  bool _isLoadingFromScroll = false;
   bool _hasMoreRecipes = true;
 
-  List<Recipe> recipes = [];
-  ScrollController scrollController;
+  List<Recipe> _recipes = [];
+  ScrollController _scrollController;
 
   @override
   dispose() {
     super.dispose();
-    scrollController.dispose();
+    _scrollController.dispose();
   }
 
   // - Widget building
@@ -38,11 +48,11 @@ class _RecipeResultListState extends State<RecipeResultList> {
       builder: (context, state, _) => FutureBuilder<List<Recipe>>(
         future: _fetchRecipes(state),
         builder: (context, snapshot) {
-          scrollController ??= PrimaryScrollController.of(context)..addListener(() {
+          _scrollController ??= PrimaryScrollController.of(context)..addListener(() {
             _scrollListener(state);
           });
           if (state.wantToScrollToTop) {
-            scrollController.animateTo(0, duration: Duration(milliseconds: 300), curve: ElasticOutCurve());
+            _scrollController.animateTo(0, duration: Duration(milliseconds: 300), curve: ElasticOutCurve());
             state.resetScrollToTop();
           }
           return _results(context: context, state: state, snapshot: snapshot);
@@ -76,7 +86,11 @@ class _RecipeResultListState extends State<RecipeResultList> {
         );
 
       case RecipeResultsType.emptyOrNullResults:
-        final text = state.searchQuery.isNotEmpty ? "No Results" : "Empty";
+        if (!_isLoadingFromScroll) {
+          return Center(child: CircularProgressIndicator());
+        }
+        final text = (state.searchQuery.isNotEmpty || state.ingredients.isNotEmpty)
+            ? "No Results" : "Empty";
         return Center(
           child: Text(
             text,
@@ -91,18 +105,22 @@ class _RecipeResultListState extends State<RecipeResultList> {
           },
           key: _refreshIndicatorKey,
           child: Scrollbar(
-            child: ListView.builder(
-              padding: const EdgeInsets.all(8),
-              controller: scrollController,
-              itemCount: recipes.length + (_hasMoreRecipes ? _pageSize*2 : 0), // (snapshot.data ?? recipes).length,
-              itemBuilder: (context, index) {
-                final hasRealData = snapshot.hasData && snapshot.data.length > index;
-                return Card(
-                  child: hasRealData
-                    ? _listItem(snapshot: snapshot, itemIndex: index)
-                    : _emptyListItem(snapshot: snapshot, itemIndex: index)
-                );
-              }
+            child: Container(
+              width: MediaQueryUtils.recommendedItemsWidth(context),
+              child: ListView.builder(
+                padding: const EdgeInsets.all(8),
+                controller: _scrollController,
+                itemCount: _recipes.length + (_hasMoreRecipes ? _pageSize*2 : 0), // (snapshot.data ?? recipes).length,
+                itemBuilder: (context, index) {
+                  final hasRealData = snapshot.hasData && snapshot.data.length > index;
+                  return Card(
+                    elevation: 2,
+                    child: hasRealData
+                      ? _listItem(snapshot: snapshot, itemIndex: index)
+                      : _emptyListItem(snapshot: snapshot, itemIndex: index)
+                  );
+                }
+              ),
             ),
           )
         );
@@ -124,19 +142,18 @@ class _RecipeResultListState extends State<RecipeResultList> {
     );
   }
 
-  Widget _emptyListItem({AsyncSnapshot<List<Recipe>> snapshot, int itemIndex}) {
-    final widgets = <Widget>[Text(""), Text("")];
-    return ListTile(
+  Widget _emptyListItem({AsyncSnapshot<List<Recipe>> snapshot, int itemIndex}) =>
+    ListTile(
       contentPadding: const EdgeInsets.all(10),
-      leading: Column(children: <Widget>[Text(""), ...widgets]),//_emptyImageWidget,
-      title: Text("Loading"),
-      subtitle: Text("--")
+      leading: _emptyImageWidget,
+      title: const Text("Loading"),
+      subtitle: const Text("--")
     );
-  }
 
-  Widget _imageFor(String thumbnail) {
+  Widget _imageFor(Uri thumbnailLink) {
 
-    if (thumbnail == null || thumbnail.isEmpty) {
+    final thumbnailString = thumbnailLink.toString();
+    if (thumbnailString.isEmpty) {
       return _emptyImageWidget;
     }
 
@@ -146,7 +163,7 @@ class _RecipeResultListState extends State<RecipeResultList> {
         height: 50,
         child: FadeInImage.assetNetwork(
           placeholder: 'assets/recipe/placeholder.png',
-          image: thumbnail,
+          image: thumbnailString,
           fit: BoxFit.cover,
           fadeInDuration: const Duration(milliseconds: 100),
           fadeOutDuration: const Duration(milliseconds: 50),
@@ -155,31 +172,44 @@ class _RecipeResultListState extends State<RecipeResultList> {
     );
   }
 
-  Widget get _emptyImageWidget {
-    return CircleAvatar(
-        radius: 25,
-        backgroundImage: AssetImage('assets/recipe/placeholder.png')
+  Widget get _emptyImageWidget =>
+    const CircleAvatar(
+      radius: 25,
+      backgroundImage: const AssetImage('assets/recipe/placeholder.png')
     );
-  }
+
 
   // - Network related
 
   Future<List<Recipe>> _fetchRecipes(RecipeStateNotifier state) async {
     try {
+
+      if (state.page == 1) {
+        _recipes.clear();
+      }
+
       final currentPageRecipes = state.page == 1
-          ? await RecipeUseCase.multiFetch(ingredients: state.ingredients, query: state.searchQuery, pages: [state.page, state.page + 1])
-          : await RecipeUseCase.fetch(ingredients: state.ingredients, query: state.searchQuery, page: state.page);
+        ? await widget.recipeUseCase.multiFetch(
+          ingredients: state.ingredients,
+          query: state.searchQuery,
+          pages: [state.page, state.page + 1]
+         )
+        : await widget.recipeUseCase.fetch(RecipeQuery(
+            ingredients: state.ingredients,
+            query: state.searchQuery,
+            page: state.page
+          ));
 
       _hasMoreRecipes = currentPageRecipes.length >= _pageSize;
 
       if (state.page == 1) {
-        recipes = currentPageRecipes.toList();
+        _recipes = currentPageRecipes.toList();
       } else {
-        recipes.addAll(currentPageRecipes.toList());
+        _recipes.addAll(currentPageRecipes.toList());
       }
+      _isLoadingFromScroll = false;
 
-      _isLoading = false;
-      return recipes;
+      return _recipes;
     } on DioError catch(e) {
       return Future.error(e);
     }
@@ -189,22 +219,23 @@ class _RecipeResultListState extends State<RecipeResultList> {
 
   void _scrollListener(RecipeStateNotifier state) async {
 
-    if (_isLoading) { return; }
+    if (_isLoadingFromScroll) { return; }
 
-    final currentPosition = scrollController.position.pixels;
-    final maxScrollExtent = scrollController.position.maxScrollExtent;
-    final offsetForItem = () => maxScrollExtent / recipes.length;
+    final currentPosition = _scrollController.position.pixels;
+    final maxScrollExtent = _scrollController.position.maxScrollExtent;
+    final offsetForItem = () => maxScrollExtent / _recipes.length;
 
     if (currentPosition == maxScrollExtent ||
         currentPosition >= (maxScrollExtent - (_pageSize * 2 * offsetForItem()))) {
-      _isLoading = true;
+      _isLoadingFromScroll = true;
       _increasePage(state);
     }
   }
 
-  void _loadURL(String url) async {
-    if (url != null && await canLaunch(url)) {
-      await launch(url);
+  void _loadURL(Uri url) async {
+    final urlString = url.toString();
+    if (urlString.isNotEmpty && await canLaunch(urlString)) {
+      await launch(urlString);
     }
   }
 
@@ -216,7 +247,7 @@ class _RecipeResultListState extends State<RecipeResultList> {
   }
 
   void _onReload(RecipeStateNotifier state) {
-    recipes.clear();
+    _recipes.clear();
     state.resetPage();
   }
 }

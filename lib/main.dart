@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
-import 'Pages/RecipeSearch/RecipeSearchPage.dart';
-import 'package:flutter/services.dart';
+import 'Pages/RecipeSearch/RecipeSearchScreen.dart';
 
 void main() => runApp(RecipesApp());
 
@@ -24,7 +23,7 @@ class RecipesApp extends StatelessWidget {
           ),
         )
       ),
-      home: RecipeSearchPage(title: 'Recipes'),
+      home: RecipeSearchScreen(title: 'Recipes'),
     );
   }
 }
